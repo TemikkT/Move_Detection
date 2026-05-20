@@ -7,21 +7,41 @@ from tqdm import tqdm
 import mediapipe as mp
 
 
+DEBUG = input('Запустить малую версию для проверки гипотез (Yes/No): ')
 #пУТИ 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 DATA_PATH = BASE_DIR / "data" / "UFC101"
-OUTPUT_PATH = BASE_DIR / "keypoints_data" / "mediapipe"
+
+if DEBUG == 'No':
+    OUTPUT_PATH = BASE_DIR / "keypoints_data" / "mediapipe"
+else:
+    OUTPUT_PATH = BASE_DIR / "keypoints_data" / "DEBUG" / "mediapipe"
+
 SEQUENCE_LENGTH = 30
 
 FRAME_SKIP = 2
 
 mp_pose = mp.solutions.pose
 
-
 def extract_keypoints(results):
     if results.pose_landmarks:
-        return np.array([[lm.x, lm.y, lm.z] for lm in results.pose_landmarks.landmark]).flatten()
+        keypoints = np.array([
+            [lm.x, lm.y, lm.z]
+            for lm in results.pose_landmarks.landmark
+        ])
+
+        #Нормазилация позиции
+        left_hip = keypoints[23]
+        right_hip = keypoints[24]
+
+        hip_center = (
+            left_hip + right_hip
+        ) / 2
+
+        keypoints = keypoints - hip_center
+        return keypoints.flatten()
+
     return np.zeros(33 * 3)
 
 def process_video(video_path):
@@ -59,10 +79,13 @@ def process_video(video_path):
             sequence.append(keypoints)
 
     cap.release()
+    
     return sequence
 
-
-
+#Только для проверки гипотез
+classes = ['Archery', 'BenchPress', 'Biking', 
+           'PlayingGuitar', 'PlayingPiano', 'LongJump', 
+           'Mixing', 'PizzaTossing', 'PlayingDaf', 'CliffDiving']
 splits = ["train", "val", "test"]
 
 for split in splits:
@@ -75,6 +98,8 @@ for split in splits:
     df = pd.read_csv(csv_path, sep=',')
     metadata = []
 
+    if DEBUG == 'Yes':
+        df = df[df['label'].isin(classes)].copy()
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc=split):
 

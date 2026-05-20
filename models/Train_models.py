@@ -9,17 +9,18 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import torch.optim as optim
 from sklearn.metrics import accuracy_score
+from pathlib import Path
 
-import GRU
-import LSTM
-import Transformer
+from models_code import GRU
+from models_code import LSTM
+from models_code import Transformer
 
 
 device = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
 )
 
-
+BASE_DIR = Path(__file__).resolve().parent.parent
 print(device)
 
 class ActionDataset(Dataset):
@@ -49,11 +50,19 @@ class ActionDataset(Dataset):
 
         return x, y
 
+
+
+DEBUG = input('Запустить малую версию для проверки гипотез (Yes/No): ')
 which_Data = input('Выберите данные для обучения - (mediapipe / yolo): ')
 
-train_dataset = ActionDataset(f"C:/Users/user/Move_Detection/keypoints_data/{which_Data}/train_metadata.csv")
-val_dataset   = ActionDataset(f"C:/Users/user/Move_Detection/keypoints_data/{which_Data}/test_metadata.csv", label_enc=train_dataset.LEncoder)
-test_dataset  = ActionDataset(f"C:/Users/user/Move_Detection/keypoints_data/{which_Data}/val_metadata.csv", label_enc=train_dataset.LEncoder)
+if DEBUG == 'NO':
+    train_dataset = ActionDataset(BASE_DIR / "keypoints_data" / which_Data / "train_metadata.csv")
+    val_dataset   = ActionDataset(BASE_DIR / "keypoints_data" / which_Data / "test_metadata.csv", label_enc=train_dataset.LEncoder)
+    test_dataset  = ActionDataset(BASE_DIR / "keypoints_data" / which_Data / "val_metadata.csv", label_enc=train_dataset.LEncoder)
+else:
+    train_dataset = ActionDataset(BASE_DIR / "keypoints_data" / "DEBUG" / which_Data / "train_metadata.csv")
+    val_dataset   = ActionDataset(BASE_DIR / "keypoints_data" / "DEBUG" / which_Data / "test_metadata.csv", label_enc=train_dataset.LEncoder)
+    test_dataset  = ActionDataset(BASE_DIR / "keypoints_data" / "DEBUG" / which_Data / "val_metadata.csv", label_enc=train_dataset.LEncoder)
 
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 val_loader   = DataLoader(val_dataset, batch_size=32)
@@ -165,10 +174,11 @@ def evaluate(model, loader):
 
     return avg_loss, accuracy
 
-EPOCHS = 40
-
+EPOCHS = int(input('Введите число эпох: '))
+name_of_exp = input('Назовите кратко что с чем обучаем (на английском слитно): ')
 best_acc = 0
 
+acc_data_inf = pd.read_csv(BASE_DIR / "Analyse" / "all_models_full_data.csv")
 
 for epoch in range(EPOCHS):
 
@@ -184,6 +194,9 @@ for epoch in range(EPOCHS):
         val_loader
     )
 
+    new_row = pd.DataFrame([{'Epoch':epoch, 'Accuracy_train':train_acc, 'Accuracy_val':val_acc, 'Exp_name':name_of_exp}])
+    acc_data_inf = pd.concat([acc_data_inf, new_row], ignore_index=True)
+
     scheduler.step(val_acc)
 
     print(
@@ -196,10 +209,9 @@ for epoch in range(EPOCHS):
         f"Val Acc: {val_acc:.4f}"
     )
 
+
     if val_acc > best_acc:
-
         best_acc = val_acc
-
         torch.save(
             model.state_dict(),
             f"best_{which_model}_model_{which_Data}.pth"
@@ -208,3 +220,5 @@ for epoch in range(EPOCHS):
         
 
         print("Best model saved!")
+
+acc_data_inf.to_csv(BASE_DIR / "Analyse" / "all_models_full_data.csv", index=False)

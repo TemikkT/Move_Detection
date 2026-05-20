@@ -7,10 +7,15 @@ from tqdm import tqdm
 from ultralytics import YOLO
 
 
+DEBUG = input('Запустить малую версию для проверки гипотез (Yes/No): ')
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 DATA_PATH = BASE_DIR / "data" / "UFC101"
-OUTPUT_PATH = BASE_DIR / "keypoints_data" / "yolo"
+if DEBUG == 'No':
+    OUTPUT_PATH = BASE_DIR / "keypoints_data" / "yolo"
+else:
+    OUTPUT_PATH = BASE_DIR / "keypoints_data" / "DEBUG" / "yolo"
 SEQUENCE_LENGTH = 30
 
 FRAME_SKIP = 2
@@ -116,6 +121,11 @@ def create_chunks(sequence):
 
     return chunks
 
+
+classes = ['Archery', 'BenchPress', 'Biking', 
+           'PlayingGuitar', 'PlayingPiano', 'LongJump', 
+           'Mixing', 'PizzaTossing', 'PlayingDaf', 'CliffDiving']
+
 splits = ["train", "val", "test"]
 
 for split in splits:
@@ -127,6 +137,9 @@ for split in splits:
 
     df = pd.read_csv(csv_path, sep=',')
     metadata = []
+
+    if DEBUG == 'Yes':
+        df = df[df['label'].isin(classes)].copy()
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc=split):
 
