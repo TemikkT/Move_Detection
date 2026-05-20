@@ -1,17 +1,23 @@
 import os
+from pathlib import Path
 import cv2
+import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import mediapipe as mp
 
 
-# === ПУТИ ===
-DATA_PATH = "../data/sport_data"
-OUTPUT_PATH = "../keypoints_data"
+#пУТИ 
+BASE_DIR = Path(__file__).resolve().parent.parent
 
+DATA_PATH = BASE_DIR / "data" / "UFC101"
+OUTPUT_PATH = BASE_DIR / "keypoints_data" / "mediapipe"
 SEQUENCE_LENGTH = 30
 
+FRAME_SKIP = 2
+
 mp_pose = mp.solutions.pose
+
 
 def extract_keypoints(results):
     if results.pose_landmarks:
@@ -22,58 +28,130 @@ def process_video(video_path):
     cap = cv2.VideoCapture(video_path)
     sequence = []
 
-    with mp_pose.Pose() as pose:
-        while True:
+    with mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=1,
+        smooth_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    ) as pose:
+        frame_idx = 0
+
+        while cap.isOpened():
+
             ret, frame = cap.read()
+
             if not ret:
                 break
 
-            frame = cv2.resize(frame, (640, 480))
+            frame_idx += 1
+
+            if frame_idx % FRAME_SKIP != 0:
+                continue
+
+            frame = cv2.resize(frame, (224, 224))
+
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             results = pose.process(rgb)
-            keypoints = extract_keypoints(results)
 
+            keypoints = extract_keypoints(results)
             sequence.append(keypoints)
 
     cap.release()
     return sequence
 
-# === ГЛАВНЫЙ ЦИКЛ ===
+
 
 splits = ["train", "val", "test"]
 
 for split in splits:
-    split_path = os.path.join(DATA_PATH, split)
+    csv_path = DATA_PATH / f"{split}.csv"
 
-    if not os.path.exists(split_path):
+    if not csv_path.exists():
+        print(f"CSV не найден: {csv_path}")
         continue
 
-    for action in os.listdir(split_path):
-        action_path = os.path.join(split_path, action)
+    df = pd.read_csv(csv_path, sep=',')
+    metadata = []
 
-        if not os.path.isdir(action_path):
-            continue
-        if action not in ["PushUps", "Punch", "WalkingWithDog"]:
+
+    for _, row in tqdm(df.iterrows(), total=len(df), desc=split):
+
+        clip_name = row["clip_name"]
+        clip_path = row["clip_path"].lstrip("/\\")
+        video_path = DATA_PATH / clip_path
+        label = row["label"]
+
+    
+        if not video_path.exists():
+            print(f"\nФайл не найден: {video_path}")
             continue
 
-        save_dir = os.path.join(OUTPUT_PATH, split, action)
+        save_dir = os.path.join(
+            OUTPUT_PATH,
+            split,
+            label
+        )
+
         os.makedirs(save_dir, exist_ok=True)
 
-        videos = os.listdir(action_path)
+        # Process video
 
-        for video in tqdm(videos, desc=f"{split} | {action}"):
-            video_path = os.path.join(action_path, video)
+        sequence = process_video(video_path)
+        if len(sequence) == 0:
+            print(f"\nПустое видео: {video_path}")
+            continue
 
-            sequence = process_video(video_path)
+        for i in range(0, len(sequence), SEQUENCE_LENGTH):
 
-            # разбиваем на чанки
-            for i in range(0, len(sequence) - SEQUENCE_LENGTH, SEQUENCE_LENGTH):
-                chunk = sequence[i:i + SEQUENCE_LENGTH]
+            chunk = sequence[i:i + SEQUENCE_LENGTH]
 
-                save_path = os.path.join(
-                    save_dir,
-                    f"{video}_{i}.npy"
-                )
+            # если chunk меньше нужной длины дополняем нулями
+            while len(chunk) < SEQUENCE_LENGTH:
+                chunk.append(np.zeros(33 * 3))
 
-                np.save(save_path, chunk)
+            chunk = np.array(chunk)
+
+            zero_frames = np.sum(
+                np.all(chunk == 0, axis=1)
+            )
+
+            if zero_frames > 20:
+                continue
+
+            # проверка shape
+            if chunk.shape != (SEQUENCE_LENGTH, 99):
+                print(f"\nОшибка shape: {chunk.shape}")
+                continue
+
+            # проверка NaN
+            if np.isnan(chunk).any():
+                print(f"\nNaN найден: {video_path}")
+                continue
+
+            # имя файла
+            video_name = os.path.splitext(clip_name)[0]
+            save_name = f"{video_name}_chunk{i}.npy"
+            save_path = os.path.join(save_dir, save_name)
+
+
+            np.save(save_path, chunk)
+
+            # metadata
+            metadata.append({
+                "npy_path": save_path,
+                "label": label,
+                "split": split
+            })
+    
+    metadata_df = pd.DataFrame(metadata)
+
+    metadata_save_path = os.path.join(
+        OUTPUT_PATH,
+        f"{split}_metadata.csv"
+    )
+
+    metadata_df.to_csv(metadata_save_path, index=False)
+    print(f"\nMetadata сохранен: {metadata_save_path}")
+print("\nDONE")
