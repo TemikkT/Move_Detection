@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import random
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
@@ -14,6 +15,28 @@ from pathlib import Path
 from models_code import GRU
 from models_code import LSTM
 from models_code import Transformer
+
+OBJECT_CLASSES = {
+    0: "person",
+    1: "bicycle",
+    17: "Dog",
+    18: "horse",
+    32: "snowboard",
+    33: "sports ball",
+    34: "kite",
+    35: "baseball bat",
+    36: "baseball glove",
+    37: "skateboard",
+    38: "surfboard",
+    39: "tennis racket",
+    44: "Knife",
+    79: "hair drier",
+    80: "toothbrush",
+    67: "keyboard"
+}
+OBJECT_FEATURE_SIZE = len(OBJECT_CLASSES)
+
+
 
 
 device = torch.device(
@@ -53,6 +76,21 @@ class ActionDataset(Dataset):
 
 
 DEBUG = input('Запустить малую версию для проверки гипотез (Yes/No): ')
+
+if DEBUG == 'Yes':
+    def seed_everything(seed):
+        random.seed(seed)
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    seed_everything(42)
+
 which_Data = input('Выберите данные для обучения - (mediapipe / yolo): ')
 
 if DEBUG == 'NO':
@@ -73,7 +111,7 @@ which_model = input('Выберите модель для обучения - (LS
 if which_Data == 'mediapipe':
     input_size = 99
 else:
-    input_size = 51
+    input_size = 51 + OBJECT_FEATURE_SIZE
 
 
 if which_model == 'LSTM':
