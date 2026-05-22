@@ -9,6 +9,11 @@ from ultralytics import YOLO
 
 DEBUG = input('Запустить малую версию для проверки гипотез (Yes/No): ')
 
+object_detect = input('Запустить детектор объектов в кадре как новый признак (Yes/No): ')
+velocity_ = input('Запустить метод velocity для признаков (Yes/No): ')
+smoothing_ = input('Запустить метод smoothing для признаков (Yes/No): ')
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 DATA_PATH = BASE_DIR / "data" / "UFC101"
@@ -18,15 +23,89 @@ else:
     OUTPUT_PATH = BASE_DIR / "keypoints_data" / "DEBUG" / "yolo"
 SEQUENCE_LENGTH = 30
 
-FRAME_SKIP = 2
+model = YOLO('yolov8n-pose.pt') 
+detect_model = YOLO('yolov8n.pt') #Модель для детекта объектов в кадре
+OBJECT_CLASSES = {
+    0: "person",
+    1: "bicycle",
+    17: "Dog",
+    18: "horse",
+    32: "snowboard",
+    33: "sports ball",
+    34: "kite",
+    35: "baseball bat",
+    36: "baseball glove",
+    37: "skateboard",
+    38: "surfboard",
+    39: "tennis racket",
+    44: "Knife",
+    79: "hair drier",
+    80: "toothbrush",
+    67: "keyboard"
+}
+OBJECT_FEATURE_SIZE = len(OBJECT_CLASSES)
 
-model = YOLO('yolov8n-pose.pt')
+
 
 colors = {
     'white': (255, 255, 255),
     'red': (0, 0, 255),
     'blue': (255, 0, 0)
 }
+
+def extract_object_features(detect_results, person_box):
+    object_vector = np.zeros(OBJECT_FEATURE_SIZE)
+    if detect_results.boxes is None:
+        return object_vector
+
+    boxes = detect_results.boxes.xyxy.cpu().numpy()
+    classes = detect_results.boxes.cls.cpu().numpy()
+    confs = detect_results.boxes.conf.cpu().numpy()
+    px1, py1, px2, py2 = person_box
+
+    margin = 30     # увеличиваем область вокруг человека
+    px1 -= margin
+    py1 -= margin
+    px2 += margin
+    py2 += margin
+    class_ids = list(OBJECT_CLASSES.keys())
+
+    for box, cls, conf in zip(boxes, classes, confs): #перебор всех параметров каждого объекта в кадре
+        if conf < 0.5: # Если уверенность ниже 0.5 отбрасываем
+            continue
+
+        cls = int(cls) # Если объекта нет в нашем списке, тоже отбрасываем
+        if cls not in OBJECT_CLASSES:
+            continue
+
+        x1, y1, x2, y2 = box # создаём бокс из координат объекта
+        center_x = (x1 + x2) / 2 # находим центры
+        center_y = (y1 + y2) / 2
+
+        if (
+            px1 <= center_x <= px2 and # объект рядом с человеком
+            py1 <= center_y <= py2
+        ):
+            vector_idx = class_ids.index(cls)
+            object_vector[vector_idx] = 1
+    return object_vector
+
+
+def temporal_smoothing(sequence, window_size=3):
+    sequence = np.array(sequence)
+    smoothed_sequence = []
+    half_window = window_size // 2
+
+    for i in range(len(sequence)):
+        start = max(0, i - half_window)
+        end = min(len(sequence), i + half_window + 1)
+
+        window = sequence[start:end]
+        smoothed_frame = np.mean(window, axis=0)
+        smoothed_sequence.append(smoothed_frame)
+
+    return smoothed_sequence
+
 
 def process_video(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -36,8 +115,6 @@ def process_video(video_path):
 
     sequence = []
 
-    frame_idx = 0
-
     while cap.isOpened():
 
         ret, frame = cap.read()
@@ -45,30 +122,40 @@ def process_video(video_path):
         if not ret:
             break
         
-        frame_idx += 1
-
-        if frame_idx % FRAME_SKIP != 0:
-            continue
-
         frame = cv2.resize(frame, (224, 224))
 
-        results = model(frame, verbose=False)[0]
+        if object_detect == 'Yes':
+            results = model(frame, verbose=False)[0] # Человек
+            detect_results = detect_model(frame, verbose=False)[0] # Объекты
+        else:
+            results = model(frame, verbose=False)[0]
 
-        if results.keypoints is None:
-            sequence.append(
-                np.zeros(17 * 3)
-            )
 
+
+        if object_detect == 'Yes' and detect_results is None:
+            sequence.append(np.zeros(51 + OBJECT_FEATURE_SIZE))
             continue
+
+
+        if results.keypoints is None and object_detect == 'Yes':
+            sequence.append(np.zeros(51 + OBJECT_FEATURE_SIZE))
+            continue
+        elif results.keypoints is None and object_detect == 'No':
+            sequence.append(np.zeros(17 * 3))
+            continue
+
+
 
         keypoints = results.keypoints.data.cpu().numpy()
         boxes = results.boxes.xyxy.cpu().numpy()
 
-        if len(boxes) == 0:
-            sequence.append(
-                np.zeros(17 * 3)
-            )
 
+
+        if len(boxes) == 0 and object_detect == 'Yes':
+            sequence.append(np.zeros(51 + OBJECT_FEATURE_SIZE))
+            continue
+        elif len(boxes) == 0 and object_detect == 'No':
+            sequence.append(np.zeros(17 * 3))
             continue
 
         '''
@@ -89,6 +176,8 @@ def process_video(video_path):
 
         largest_idx = np.argmax(areas)
 
+        person_box = boxes[largest_idx]
+
         person_keypoints = keypoints[largest_idx]
         #нормализация
         person_keypoints[:, 0] /= 224
@@ -96,12 +185,57 @@ def process_video(video_path):
 
         person_keypoints = person_keypoints.flatten()
 
+        if object_detect == 'Yes':
+            object_features = extract_object_features(detect_results, person_box)
+            combined_features = np.concatenate([person_keypoints, object_features])
 
-        sequence.append(person_keypoints)
+            sequence.append(combined_features)
 
-    cap.release()
+        else:
+            sequence.append(person_keypoints)
 
-    return sequence
+
+    if velocity_ == 'Yes':
+        cap.release()
+        velocity_sequence = []
+
+        for i in range(len(sequence)):
+            current_pose = sequence[i]
+            if i == 0:
+                velocity = np.zeros_like(
+                    current_pose
+                )
+            else:
+                velocity = np.zeros_like(
+                    current_pose
+                )
+                for kp in range(17):
+                    x_idx = kp * 3
+                    y_idx = kp * 3 + 1
+                    velocity[x_idx] = (current_pose[x_idx] - sequence[i - 1][x_idx])
+                    velocity[y_idx] = (current_pose[y_idx] - sequence[i - 1][y_idx])
+
+            combined = np.concatenate([
+                current_pose,
+                velocity
+            ])
+            velocity_sequence.append(
+                combined
+            )
+        return velocity_sequence
+    
+    if smoothing_ == 'Yes':
+        cap.release()
+        sequence = temporal_smoothing(
+            sequence,
+            window_size=3
+        )
+        return sequence
+    
+    else:
+        cap.release()
+
+        return sequence
 
 def create_chunks(sequence):
     chunks = []
@@ -110,10 +244,11 @@ def create_chunks(sequence):
         chunk = sequence[i:i + SEQUENCE_LENGTH]
 
         while len(chunk) < SEQUENCE_LENGTH:
-            chunk.append(np.zeros(51))
+            chunk.append(np.zeros(Chunk_shape))
+
         chunk = np.array(chunk)
 
-        if chunk.shape != (SEQUENCE_LENGTH, 51):
+        if chunk.shape != (SEQUENCE_LENGTH, Chunk_shape):
             continue
         if np.all(chunk == 0):
             continue
@@ -121,10 +256,22 @@ def create_chunks(sequence):
 
     return chunks
 
+BASE_FEATURES = 51
 
-classes = ['Archery', 'BenchPress', 'Biking', 
+if object_detect == 'Yes':
+    BASE_FEATURES += OBJECT_FEATURE_SIZE
+
+if velocity_ == 'Yes':
+    Chunk_shape = BASE_FEATURES * 2
+else:
+    Chunk_shape = BASE_FEATURES
+
+
+classes = ['Archery', 'Biking', 
            'PlayingGuitar', 'PlayingPiano', 'LongJump', 
-           'Mixing', 'PizzaTossing', 'PlayingDaf', 'CliffDiving']
+           'Mixing', 'PizzaTossing', 'PlayingDaf',
+           'Typing', 'TennisSwing', 'Skiing', 'SkateBoarding', 
+           'Surfing','Basketball', 'BaskerballDunk', 'BaseballPitch']
 
 splits = ["train", "val", "test"]
 

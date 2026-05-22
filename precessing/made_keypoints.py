@@ -7,7 +7,13 @@ from tqdm import tqdm
 import mediapipe as mp
 
 
+
+
 DEBUG = input('Запустить малую версию для проверки гипотез (Yes/No): ')
+
+velocity_ = input('Запустить метод velocity для признаков (Yes/No): ')
+smoothing_ = input('Запустить метод smoothing для признаков (Yes/No): ')
+
 #пУТИ 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -20,9 +26,24 @@ else:
 
 SEQUENCE_LENGTH = 30
 
-FRAME_SKIP = 2
-
 mp_pose = mp.solutions.pose
+
+
+def temporal_smoothing(sequence, window_size=3):
+    sequence = np.array(sequence)
+    smoothed_sequence = []
+    half_window = window_size // 2
+
+    for i in range(len(sequence)):
+        start = max(0, i - half_window)
+        end = min(len(sequence), i + half_window + 1)
+
+        window = sequence[start:end]
+        smoothed_frame = np.mean(window, axis=0)
+        smoothed_sequence.append(smoothed_frame)
+
+    return smoothed_sequence
+
 
 def extract_keypoints(results):
     if results.pose_landmarks:
@@ -64,11 +85,6 @@ def process_video(video_path):
             if not ret:
                 break
 
-            frame_idx += 1
-
-            if frame_idx % FRAME_SKIP != 0:
-                continue
-
             frame = cv2.resize(frame, (224, 224))
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -78,11 +94,50 @@ def process_video(video_path):
             keypoints = extract_keypoints(results)
             sequence.append(keypoints)
 
-    cap.release()
+
+    if velocity_ == 'Yes':
+        cap.release()
+        velocity_sequence = []
+
+        for i in range(len(sequence)):
+            current_pose = sequence[i]
+            if i == 0:
+
+                velocity = np.zeros_like(
+                    current_pose
+                )
+            else:
+                velocity = (
+                    current_pose -
+                    sequence[i - 1]
+                )
+            combined = np.concatenate([
+                current_pose,
+                velocity
+            ])
+            velocity_sequence.append(
+                combined
+            )
+        return velocity_sequence
+
+    if smoothing_ == 'Yes':
+        cap.release()
+        sequence = temporal_smoothing(
+            sequence,
+            window_size=3
+        )
+        return sequence
     
-    return sequence
+    else:
+        cap.release()
+        return sequence
 
 #Только для проверки гипотез
+if velocity_ == 'Yes':
+    Chunk_shape = 198
+else:
+    Chunk_shape = 99
+
 classes = ['Archery', 'BenchPress', 'Biking', 
            'PlayingGuitar', 'PlayingPiano', 'LongJump', 
            'Mixing', 'PizzaTossing', 'PlayingDaf', 'CliffDiving']
@@ -134,7 +189,7 @@ for split in splits:
 
             # если chunk меньше нужной длины дополняем нулями
             while len(chunk) < SEQUENCE_LENGTH:
-                chunk.append(np.zeros(33 * 3))
+                chunk.append(np.zeros(Chunk_shape))
 
             chunk = np.array(chunk)
 
@@ -146,7 +201,7 @@ for split in splits:
                 continue
 
             # проверка shape
-            if chunk.shape != (SEQUENCE_LENGTH, 99):
+            if chunk.shape != (SEQUENCE_LENGTH, Chunk_shape):
                 print(f"\nОшибка shape: {chunk.shape}")
                 continue
 
